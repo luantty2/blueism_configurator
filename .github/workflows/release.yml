@@ -1,0 +1,153 @@
+name: Build Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+env:
+  APP_DISPLAY_NAME: Blueism Configurator
+  APP_BINARY_NAME: blueism-configurator
+  MACOS_BUNDLE_ID: com.blueism.configurator
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: blueism-configurator-windows-x64
+            binary_name: blueism-configurator.exe
+
+          - name: macos-intel
+            os: macos-13
+            target: x86_64-apple-darwin
+            artifact_name: blueism-configurator-macos-intel
+            binary_name: blueism-configurator
+
+          - name: macos-apple-silicon
+            os: macos-14
+            target: aarch64-apple-darwin
+            artifact_name: blueism-configurator-macos-apple-silicon
+            binary_name: blueism-configurator
+
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: blueism-configurator-linux-x64
+            binary_name: blueism-configurator
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config
+
+      - name: Read package version
+        shell: bash
+        run: |
+          VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          echo "PACKAGE_VERSION=${VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "dist/"
+          Compress-Archive -Path dist/* -DestinationPath "${{ matrix.artifact_name }}.zip"
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" dist/
+          tar -czf "${{ matrix.artifact_name }}.tar.gz" -C dist .
+
+      - name: Package macOS app
+        if: runner.os == 'macOS'
+        run: |
+          APP_DIR="dist/${APP_DISPLAY_NAME}.app"
+          mkdir -p "${APP_DIR}/Contents/MacOS"
+          mkdir -p "${APP_DIR}/Contents/Resources"
+
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "${APP_DIR}/Contents/MacOS/${APP_BINARY_NAME}"
+
+          cat > "${APP_DIR}/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>${APP_DISPLAY_NAME}</string>
+            <key>CFBundleDisplayName</key>
+            <string>${APP_DISPLAY_NAME}</string>
+            <key>CFBundleIdentifier</key>
+            <string>${MACOS_BUNDLE_ID}</string>
+            <key>CFBundleVersion</key>
+            <string>${PACKAGE_VERSION}</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${PACKAGE_VERSION}</string>
+            <key>CFBundleExecutable</key>
+            <string>${APP_BINARY_NAME}</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+          hdiutil create \
+            -volname "${APP_DISPLAY_NAME}" \
+            -srcfolder "${APP_DIR}" \
+            -ov \
+            -format UDZO \
+            "${{ matrix.artifact_name }}.dmg"
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.zip
+
+      - name: Upload Linux artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.tar.gz
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.dmg
