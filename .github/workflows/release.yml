@@ -97,6 +97,7 @@ jobs:
           mkdir -p "${APP_DIR}/Contents/Resources"
 
           cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "${APP_DIR}/Contents/MacOS/${APP_BINARY_NAME}"
+          cp "assets/icons/app-icon.icns" "${APP_DIR}/Contents/Resources/app-icon.icns"
 
           cat > "${APP_DIR}/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -116,6 +117,8 @@ jobs:
             <string>${PACKAGE_VERSION}</string>
             <key>CFBundleExecutable</key>
             <string>${APP_BINARY_NAME}</string>
+            <key>CFBundleIconFile</key>
+            <string>app-icon</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>NSHighResolutionCapable</key>

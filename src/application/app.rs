@@ -19,7 +19,8 @@ pub fn run() -> eframe::Result<()> {
             .with_title(&title)
             .with_inner_size([360.0, 720.0])
             .with_min_inner_size([360.0, 720.0])
-            .with_max_inner_size([600.0, 720.0]),
+            .with_max_inner_size([600.0, 720.0])
+            .with_icon(load_app_icon()),
         ..Default::default()
     };
 
@@ -28,6 +29,11 @@ pub fn run() -> eframe::Result<()> {
         options,
         Box::new(move |cc| Ok(Box::new(ConfiguratorApp::new(cc, hid, preferences)))),
     )
+}
+
+fn load_app_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icons/app-icon.png"))
+        .unwrap_or_else(|_| egui::IconData::default())
 }
 
 pub struct ConfiguratorApp {
