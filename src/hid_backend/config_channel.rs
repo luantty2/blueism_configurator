@@ -6,7 +6,7 @@ use std::{thread, time::Duration};
 
 const REPORT_ID: u8 = 7;
 const REPORT_SIZE: usize = 30;
-const EVENT_DATA_LEN_MAX: usize = REPORT_SIZE - 5;
+pub const EVENT_DATA_LEN_MAX: usize = REPORT_SIZE - 5;
 pub const LOCAL_RECIPIENT: u8 = 0x00;
 const INVALID_PEER_ID: u8 = 0xff;
 const MOD_FIELD_POS: u8 = 4;
@@ -45,6 +45,47 @@ pub struct DevInfo {
     pub generation: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct DfuInfo {
+    pub state: DfuState,
+    pub image_length: u32,
+    pub image_checksum: u32,
+    pub offset: u32,
+    pub sync_buffer_size: u16,
+}
+
+impl DfuInfo {
+    pub fn is_started(&self) -> bool {
+        matches!(self.state, DfuState::Active | DfuState::Storing)
+    }
+
+    pub fn is_storing(&self) -> bool {
+        self.state == DfuState::Storing
+    }
+
+    pub fn is_cleaning(&self) -> bool {
+        self.state == DfuState::Cleaning
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.state != DfuState::Inactive
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DfuState {
+    Inactive,
+    Active,
+    Storing,
+    Cleaning,
+}
+
+#[derive(Clone, Debug)]
+pub struct DfuModuleConfig {
+    module_id: u8,
+    options: BTreeMap<String, u8>,
+}
+
 struct ModuleConfig {
     id: u8,
     options: BTreeMap<String, u8>,
@@ -59,6 +100,7 @@ enum ConfigStatus {
     GetBoardName = 3,
     IndexPeers = 4,
     GetPeer = 5,
+    Set = 6,
     Fetch = 7,
     Success = 8,
     Timeout = 9,
@@ -76,6 +118,7 @@ impl ConfigStatus {
             3 => Ok(Self::GetBoardName),
             4 => Ok(Self::IndexPeers),
             5 => Ok(Self::GetPeer),
+            6 => Ok(Self::Set),
             7 => Ok(Self::Fetch),
             8 => Ok(Self::Success),
             9 => Ok(Self::Timeout),
@@ -84,6 +127,80 @@ impl ConfigStatus {
             12 => Ok(Self::Disconnected),
             _ => Err(format!("Unknown config status {byte}")),
         }
+    }
+}
+
+pub fn dfu_sync(device: &HidDevice, recipient: u8) -> Result<DfuInfo, String> {
+    let dfu_config = discover_dfu_config(device, recipient)?;
+    dfu_sync_with_config(device, recipient, &dfu_config)
+}
+
+pub fn dfu_sync_with_config(
+    device: &HidDevice,
+    recipient: u8,
+    dfu_config: &DfuModuleConfig,
+) -> Result<DfuInfo, String> {
+    let data = dfu_fetch_option_with_config(device, recipient, dfu_config, "sync")?;
+    parse_dfu_info(&data)
+}
+
+pub fn dfu_start(
+    device: &HidDevice,
+    recipient: u8,
+    image_length: u32,
+    image_checksum: u32,
+    offset: u32,
+) -> Result<(), String> {
+    let dfu_config = discover_dfu_config(device, recipient)?;
+    dfu_start_with_config(
+        device,
+        recipient,
+        &dfu_config,
+        image_length,
+        image_checksum,
+        offset,
+    )
+}
+
+pub fn dfu_start_with_config(
+    device: &HidDevice,
+    recipient: u8,
+    dfu_config: &DfuModuleConfig,
+    image_length: u32,
+    image_checksum: u32,
+    offset: u32,
+) -> Result<(), String> {
+    let mut event_data = Vec::with_capacity(12);
+    event_data.extend_from_slice(&image_length.to_le_bytes());
+    event_data.extend_from_slice(&image_checksum.to_le_bytes());
+    event_data.extend_from_slice(&offset.to_le_bytes());
+    dfu_set_option_with_config(device, recipient, dfu_config, "start", &event_data)
+}
+
+pub fn dfu_send_data(device: &HidDevice, recipient: u8, data: &[u8]) -> Result<(), String> {
+    let dfu_config = discover_dfu_config(device, recipient)?;
+    dfu_send_data_with_config(device, recipient, &dfu_config, data)
+}
+
+pub fn dfu_send_data_with_config(
+    device: &HidDevice,
+    recipient: u8,
+    dfu_config: &DfuModuleConfig,
+    data: &[u8],
+) -> Result<(), String> {
+    dfu_set_option_with_config(device, recipient, dfu_config, "data", data)
+}
+
+pub fn dfu_reboot_with_config(
+    device: &HidDevice,
+    recipient: u8,
+    dfu_config: &DfuModuleConfig,
+) -> Result<(), String> {
+    let data = dfu_fetch_option_with_config(device, recipient, dfu_config, "reboot")?;
+    match data.as_slice() {
+        [1] => Ok(()),
+        [0] => Err("Device rejected reboot request".to_owned()),
+        _ => Err(format!("Invalid reboot response length {}", data.len())),
     }
 }
 
@@ -136,10 +253,7 @@ pub fn read_connected_peers(device: &HidDevice) -> Result<Vec<u8>, String> {
     Ok(peers)
 }
 
-pub fn read_detailed_info(
-    device: &HidDevice,
-    recipient: u8,
-) -> Result<DetailedDeviceInfo, String> {
+pub fn read_detailed_info(device: &HidDevice, recipient: u8) -> Result<DetailedDeviceInfo, String> {
     let modules = discover_device_config(device, recipient)?;
     let module_names = modules.keys().cloned().collect::<Vec<_>>();
     let Some((dfu_module_name, dfu_module)) = modules
@@ -163,9 +277,7 @@ pub fn read_detailed_info(
         .and_then(|option_id| fetch_option(device, recipient, dfu_module.id, *option_id).ok())
         .and_then(|data| parse_devinfo(&data).ok());
 
-    let bootloader_variant = dfu_module_name
-        .strip_prefix("dfu/")
-        .map(ToOwned::to_owned);
+    let bootloader_variant = dfu_module_name.strip_prefix("dfu/").map(ToOwned::to_owned);
 
     Ok(DetailedDeviceInfo {
         modules: module_names,
@@ -188,6 +300,72 @@ fn discover_device_config(
     }
 
     Ok(modules)
+}
+
+pub fn discover_dfu_config(device: &HidDevice, recipient: u8) -> Result<DfuModuleConfig, String> {
+    let modules = discover_device_config(device, recipient)?;
+    let Some((_dfu_module_name, dfu_module)) = modules
+        .iter()
+        .find(|(name, _module)| name.as_str() == "dfu" || name.starts_with("dfu/"))
+    else {
+        return Err("Module DFU not found".to_owned());
+    };
+
+    Ok(DfuModuleConfig {
+        module_id: dfu_module.id,
+        options: dfu_module.options.clone(),
+    })
+}
+
+fn dfu_fetch_option(
+    device: &HidDevice,
+    recipient: u8,
+    option_name: &str,
+) -> Result<Vec<u8>, String> {
+    let dfu_config = discover_dfu_config(device, recipient)?;
+    dfu_fetch_option_with_config(device, recipient, &dfu_config, option_name)
+}
+
+fn dfu_fetch_option_with_config(
+    device: &HidDevice,
+    recipient: u8,
+    dfu_config: &DfuModuleConfig,
+    option_name: &str,
+) -> Result<Vec<u8>, String> {
+    let option_id = dfu_config
+        .options
+        .get(option_name)
+        .copied()
+        .ok_or_else(|| format!("DFU option {option_name} not found"))?;
+
+    fetch_option(device, recipient, dfu_config.module_id, option_id)
+}
+
+fn dfu_set_option(
+    device: &HidDevice,
+    recipient: u8,
+    option_name: &str,
+    event_data: &[u8],
+) -> Result<(), String> {
+    let dfu_config = discover_dfu_config(device, recipient)?;
+    dfu_set_option_with_config(device, recipient, &dfu_config, option_name, event_data)
+}
+
+fn dfu_set_option_with_config(
+    device: &HidDevice,
+    recipient: u8,
+    dfu_config: &DfuModuleConfig,
+    option_name: &str,
+    event_data: &[u8],
+) -> Result<(), String> {
+    let option_id = dfu_config
+        .options
+        .get(option_name)
+        .copied()
+        .ok_or_else(|| format!("DFU option {option_name} not found"))?;
+    let event_id = (dfu_config.module_id << MOD_FIELD_POS) | option_id;
+
+    exchange(device, recipient, event_id, ConfigStatus::Set, event_data).map(|_| ())
 }
 
 fn discover_module_config(
@@ -238,7 +416,13 @@ fn discover_module_config(
         module_name = format!("{module_name}/{}", decode_string(&variant));
     }
 
-    Ok((module_name, ModuleConfig { id: module_id, options }))
+    Ok((
+        module_name,
+        ModuleConfig {
+            id: module_id,
+            options,
+        },
+    ))
 }
 
 fn fetch_module_description_option(
@@ -289,6 +473,28 @@ fn parse_devinfo(data: &[u8]) -> Result<DevInfo, String> {
         vendor_id: u16::from_le_bytes(data[0..2].try_into().unwrap()),
         product_id: u16::from_le_bytes(data[2..4].try_into().unwrap()),
         generation: decode_string(&data[4..]),
+    })
+}
+
+fn parse_dfu_info(data: &[u8]) -> Result<DfuInfo, String> {
+    if data.len() != 15 {
+        return Err(format!("Invalid DFU sync info length {}", data.len()));
+    }
+
+    let state = match data[0] {
+        0x00 => DfuState::Inactive,
+        0x01 => DfuState::Active,
+        0x02 => DfuState::Storing,
+        0x03 => DfuState::Cleaning,
+        state => return Err(format!("Invalid DFU state {state}")),
+    };
+
+    Ok(DfuInfo {
+        state,
+        image_length: u32::from_le_bytes(data[1..5].try_into().unwrap()),
+        image_checksum: u32::from_le_bytes(data[5..9].try_into().unwrap()),
+        offset: u32::from_le_bytes(data[9..13].try_into().unwrap()),
+        sync_buffer_size: u16::from_le_bytes(data[13..15].try_into().unwrap()),
     })
 }
 
@@ -364,7 +570,11 @@ fn exchange(
 }
 
 fn parse_response(response: &[u8]) -> Result<Response, String> {
-    let offset = if response.first() == Some(&REPORT_ID) { 1 } else { 0 };
+    let offset = if response.first() == Some(&REPORT_ID) {
+        1
+    } else {
+        0
+    };
 
     if response.len() < offset + 4 {
         return Err("Feature response is too short".to_string());

@@ -1,5 +1,5 @@
 use crate::application::data::{
-    DeviceInformation, DeviceInformationDetails, DeviceIdentityInformation, DiscoveredHidDevice,
+    DeviceIdentityInformation, DeviceInformation, DeviceInformationDetails, DiscoveredHidDevice,
     FirmwareSummaryInformation,
 };
 use crate::hid_backend::{config_channel, device_discovery::BlueismHid};

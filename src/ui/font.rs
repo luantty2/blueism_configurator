@@ -1,23 +1,11 @@
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 
 pub fn install_fonts(ctx: &egui::Context) {
-    const FONT_CANDIDATES: &[&str] = &[
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/Library/Fonts/Arial Unicode.ttf",
-    ];
-
-    let Some(font_bytes) = FONT_CANDIDATES
-        .iter()
-        .find_map(|path| std::fs::read(path).ok())
-    else {
-        return;
-    };
-
     let mut fonts = FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("cjk".to_owned(), FontData::from_owned(font_bytes).into());
+    fonts.font_data.insert(
+        "cjk".to_owned(),
+        FontData::from_static(include_bytes!("../../assets/SourceHanSansSC-Light-2.otf")).into(),
+    );
     fonts.font_data.insert(
         "fontawesome".to_owned(),
         FontData::from_static(include_bytes!("../../assets/fa-solid-900.ttf")).into(),
